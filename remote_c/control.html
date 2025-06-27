@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>无人机网页控制器</title>
+    <style>
+        .controller {
+            display: grid;
+            grid-template-columns: repeat(3, 100px);
+            grid-gap: 10px;
+            margin: 20px auto;
+            width: 320px;
+        }
+        .status-panel {
+            margin: 20px auto;
+            padding: 10px;
+            border: 1px solid #ccc;
+            width: 300px;
+            font-family: monospace;
+        }
+        .btn {
+            width: 100px;
+            height: 100px;
+            font-size: 24px;
+            background: #eee;
+            border: 2px solid #333;
+            border-radius: 10px;
+            cursor: pointer;
+            user-select: none;
+        }
+        .btn:active {
+            background: #ccc;
+        }
+    </style>
+</head>
+<body>
+    <h1>无人机网页控制器</h1>
+    
+    <div class="status-panel" id="status">
+        等待连接...
+    </div>
+    
+    <div class="controller">
+        <div></div>
+        <button class="btn" id="up">↑</button>
+        <div></div>
+        
+        <button class="btn" id="left">←</button>
+        <button class="btn" id="center">起降</button>
+        <button class="btn" id="right">→</button>
+        
+        <div></div>
+        <button class="btn" id="down">↓</button>
+        <div></div>
+        
+        <button class="btn" id="rotate_left">↶</button>
+        <button class="btn" id="throttle_up">↑↑</button>
+        <button class="btn" id="rotate_right">↷</button>
+    </div>
+
+    <script>
+        const ws = new WebSocket("ws://地面站IP:5000");
+        const statusPanel = document.getElementById('status');
+        let lastUpdate = 0;
+        
+        // 控制指令映射
+        const controls = {
+            'up': { event: 'press', key: 'z' },
+            'down': { event: 'press', key: 'x' },
+            'left': { event: 'press', key: 'a' },
+            'right': { event: 'press', key: 'd' },
+            'rotate_left': { event: 'press', key: 'q' },
+            'rotate_right': { event: 'press', key: 'e' },
+            'center': { event: 'press', key: 'c' },
+            'throttle_up': { event: 'press', key: 'j' }
+        };
+        
+        // 按钮事件处理
+        document.querySelectorAll('.btn').forEach(btn => {
+            const control = controls[btn.id];
+            
+            btn.addEventListener('mousedown', () => {
+                if (control) {
+                    ws.send(JSON.stringify({
+                        type: "control",
+                        ...control
+                    }));
+                }
+            });
+            
+            btn.addEventListener('mouseup', () => {
+                if (control) {
+                    ws.send(JSON.stringify({
+                        type: "control",
+                        event: "release",
+                        key: control.key
+                    }));
+                }
+            });
+            
+            // 触摸设备支持
+            btn.addEventListener('touchstart', e => {
+                e.preventDefault();
+                if (control) {
+                    ws.send(JSON.stringify({
+                        type: "control",
+                        ...control
+                    }));
+                }
+            });
+            
+            btn.addEventListener('touchend', e => {
+                e.preventDefault();
+                if (control) {
+                    ws.send(JSON.stringify({
+                        type: "control",
+                        event: "release",
+                        key: control.key
+                    }));
+                }
+            });
+        });
+        
+        // 键盘控制
+        document.addEventListener('keydown', e => {
+            const key = e.key.toLowerCase();
+            ws.send(JSON.stringify({
+                type: "control",
+                event: "press",
+                key: key
+            }));
+        });
+        
+        document.addEventListener('keyup', e => {
+            const key = e.key.toLowerCase();
+            ws.send(JSON.stringify({
+                type: "control",
+                event: "release",
+                key: key
+            }));
+        });
+        
+        // WebSocket事件处理
+        ws.onopen = () => {
+            statusPanel.textContent = "已连接无人机地面站";
+            console.log("WebSocket连接已建立");
+        };
+        
+        ws.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                
+                if (data.type === "status") {
+                    // 限制更新频率（每秒10次）
+                    const now = Date.now();
+                    if (now - lastUpdate > 100) {
+                        updateStatus(data.data);
+                        lastUpdate = now;
+                    }
+                }
+            } catch (e) {
+                console.error("消息解析错误:", e);
+            }
+        };
+        
+        ws.onclose = () => {
+            statusPanel.textContent = "连接已断开";
+            console.log("WebSocket连接已关闭");
+        };
+        
+        ws.onerror = (error) => {
+            statusPanel.textContent = "连接错误";
+            console.error("WebSocket错误:", error);
+        };
+        
+        function updateStatus(data) {
+            statusPanel.innerHTML = `
+                <strong>无人机状态</strong><br>
+                X: ${data.x.toFixed(1)}m | Y: ${data.y.toFixed(1)}m<br>
+                高度: ${(-data.alt).toFixed(1)}m | 航向: ${data.yaw.toFixed(1)}°<br>
+                油门: ${data.throttle.toFixed(2)} | ${data.armed ? '已解锁' : '未解锁'}
+            `;
+        }
+    </script>
+</body>
+</html>
