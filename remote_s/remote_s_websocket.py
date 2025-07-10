@@ -3,11 +3,10 @@ from mavsdk import System
 from mavsdk.offboard import PositionNedYaw, OffboardError
 from mavsdk.action import ActionError
 import sys
-import websockets
-import json
+import websockets  # 新增WebSocket库
 
-class WebSocketKeyboard:
-    """WebSocket键盘控制类"""
+class NetworkKeyboard:
+    """网络键盘控制类（WebSocket版）"""
     def __init__(self):
         self.keys = {
             'w': False, 'a': False, 's': False, 'd': False,
@@ -15,108 +14,47 @@ class WebSocketKeyboard:
             'l': False, 'h': False, 'c': False,
             'j': False, 'k': False
         }
-        self.server = None
-        self.active_connection = None
-        self.connection_lock = asyncio.Lock()
+        self.websocket = None  # 替换原TCP连接
     
     async def start_server(self, port=5000):
         """启动WebSocket服务器"""
-        self.server = await websockets.serve(
+        async with websockets.serve(
             self.handle_client, 
-            '0.0.0.0', 
-            port,
-            ping_interval=10,  # 心跳间隔
-            ping_timeout=5     # 心跳超时
-        )
-        print(f"WebSocket控制接口已启动，监听端口: {port}")
-        await self.server.wait_closed()
+            "55.55.100.123",  # 新veth的IP
+            port
+        ):
+            print(f"WebSocket服务绑定到55.55.100.123:{port}")
+            await asyncio.Future()  # 持续运行
 
     async def handle_client(self, websocket, path):
         """处理WebSocket客户端连接"""
         print("远程控制端已连接 (WebSocket)")
-        
-        async with self.connection_lock:
-            # 只允许一个活跃连接
-            if self.active_connection:
-                try:
-                    await self.active_connection.close()
-                except:
-                    pass
-            self.active_connection = websocket
+        self.websocket = websocket
         
         try:
-            # 发送连接确认
-            await websocket.send(json.dumps({
-                "type": "connection",
-                "status": "connected"
-            }))
-            
-            # 消息处理循环
-            async for message in websocket:
-                try:
-                    # 支持JSON和原始文本协议
-                    if message.startswith("{"):
-                        data = json.loads(message)
-                        self.process_message(data)
-                    else:
-                        self.process_text_message(message)
-                except Exception as e:
-                    print(f"消息处理错误: {str(e)}")
-                    
-        except websockets.ConnectionClosed:
-            print("WebSocket连接关闭")
-        except Exception as e:
-            print(f"连接异常: {str(e)}")
-        finally:
-            async with self.connection_lock:
-                if self.active_connection == websocket:
-                    self.active_connection = None
-            print("远程控制端已断开")
-
-    def process_text_message(self, message):
-        """处理原始文本协议消息（向后兼容）"""
-        msg = message.strip().lower()
-        
-        if msg.startswith("press:"):
-            key = msg[6:]
-            if key in self.keys:
-                self.keys[key] = True
-        elif msg.startswith("release:"):
-            key = msg[8:]
-            if key in self.keys:
-                self.keys[key] = False
-        elif msg == "heartbeat:ping":
-            pass  # 忽略心跳包
-
-    def process_message(self, data):
-        """处理JSON协议消息"""
-        if data.get("type") == "control":
-            event = data.get("event")
-            key = data.get("key")
-            
-            if event == "press" and key in self.keys:
-                self.keys[key] = True
-            elif event == "release" and key in self.keys:
-                self.keys[key] = False
+            async for message in websocket:  # 持续接收消息
+                msg = message.strip().lower()
                 
-    async def send_status(self, status_data):
-        """发送状态更新到客户端"""
-        if not self.active_connection:
-            return
-            
-        try:
-            message = json.dumps({
-                "type": "status",
-                "data": status_data,
-                "timestamp": time.time()
-            })
-            await self.active_connection.send(message)
-        except Exception as e:
-            print(f"状态发送失败: {str(e)}")
-            self.active_connection = None
+                # 处理按键消息（逻辑不变）
+                if msg.startswith("press:"):
+                    key = msg[6:]
+                    if key in self.keys:
+                        self.keys[key] = True
+                elif msg.startswith("release:"):
+                    key = msg[8:]
+                    if key in self.keys:
+                        self.keys[key] = False
+                elif msg == "heartbeat:ping":
+                    pass  # 忽略心跳包
+                    
+        except websockets.exceptions.ConnectionClosed:
+            print("远程控制端已断开 (WebSocket)")
+        finally:
+            self.websocket = None
+
 
 async def drone_control(drone):
-    ctrl = WebSocketKeyboard()
+    ctrl = NetworkKeyboard()
     server_task = asyncio.create_task(ctrl.start_server())
     
     # 控制参数
@@ -317,16 +255,6 @@ async def drone_control(drone):
                 status += " [已解锁]"
             print(status, end="\r")
             
-            status_data = {
-                "x": x, 
-                "y": y, 
-                "alt": alt, 
-                "yaw": yaw,
-                "armed": armed,
-                "throttle": throttle
-            }
-            await ctrl.send_status(status_data)
-
             # 高频控制循环 - 50Hz
             await asyncio.sleep(0.02)
             
@@ -335,7 +263,7 @@ async def drone_control(drone):
     except KeyboardInterrupt:
         return 'user_exit'
     finally:
-        # 清理WebSocket服务器
+        # 清理网络服务器
         server_task.cancel()
         try:
             await server_task
